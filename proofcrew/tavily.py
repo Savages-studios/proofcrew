@@ -46,3 +46,22 @@ def format_results(results: list[dict]) -> str:
         content = (r.get("content") or "").strip()
         lines.append(f"- {title} ({url})\n  {content}")
     return "\n".join(lines)
+
+
+def source_list(results: list[dict]) -> list[dict]:
+    """The retrieved sources as structured citations: title + URL only,
+    de-duplicated by URL, in result order, entries without a URL dropped.
+
+    This list is the run's evidence base: it is recorded in worker B's
+    receipt and it is the *only* set of URLs the final deliverable's
+    Sources section may cite — so a citation in the output always traces
+    to a page Tavily actually returned, never to a worker's invention."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for r in results:
+        url = (r.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append({"title": (r.get("title") or "").strip(), "url": url})
+    return out

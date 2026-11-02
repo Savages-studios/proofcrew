@@ -17,6 +17,14 @@ The design rule, end to end: **no agent grades its own homework.**
                  the two parts are assembled deterministically — no extra
                  model call, no silent edits.
 
+Citations are first-class: the sources Tavily actually retrieved are
+carried as structured data (title + URL) into worker B's receipt, into
+the adjudicator's prompt when it runs, and into a deterministic Sources
+section appended to the final deliverable on both the assembly and the
+adjudication path — so source links survive into the final answer. The
+section is built only from retrieved URLs; on an ungrounded run there
+is no Sources section at all. The crew never invents a citation.
+
 Every stage appends a hash-chained receipt (see receipts.py).
 """
 from __future__ import annotations
@@ -24,11 +32,11 @@ from __future__ import annotations
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .config import Config
 from .receipts import ReceiptChain
-from .tavily import format_results
+from .tavily import format_results, source_list
 from .transport import ChatTransport
 
 PLAN_SYSTEM = """You are the planner in ProofCrew, a crew where no agent grades its own homework.
@@ -106,6 +114,20 @@ def needs_adjudication(review_a_on_b: dict | None, review_b_on_a: dict | None) -
     return verdict_of(review_a_on_b) != "agree" or verdict_of(review_b_on_a) != "agree"
 
 
+def sources_section(sources: list[dict]) -> str:
+    """The deterministic Sources section for the final deliverable.
+
+    Built ONLY from the URLs Tavily actually returned for this run, so a
+    cited source is evidence, not a worker's claim. Empty string when the
+    run was ungrounded — honest absence instead of fabricated links."""
+    if not sources:
+        return ""
+    lines = ["## Sources", "", "Sources retrieved via Tavily for this run:"]
+    for s in sources:
+        lines.append(f"- [{s['title'] or s['url']}]({s['url']})")
+    return "\n".join(lines) + "\n"
+
+
 @dataclass
 class RunResult:
     task: str
@@ -113,6 +135,7 @@ class RunResult:
     chain: ReceiptChain
     adjudicated: bool
     grounded_worker_b: bool
+    sources: list = field(default_factory=list)
 
 
 def run_crew(
@@ -146,8 +169,11 @@ def run_crew(
     # 2 — WORK (two Supers in parallel; B grounded via Tavily when keyed)
     grounded = tavily_client is not None
     research = ""
+    sources: list[dict] = []
     if grounded:
-        research = format_results(tavily_client.search(search_query))
+        results = tavily_client.search(search_query)
+        research = format_results(results)
+        sources = source_list(results)
 
     def do_work(subtask: str, extra: str) -> str:
         user = subtask
@@ -169,7 +195,12 @@ def run_crew(
     chain.append(
         "worker_b",
         "work",
-        {"model": config.worker_model, "grounded": grounded, "output": out_b},
+        {
+            "model": config.worker_model,
+            "grounded": grounded,
+            "sources": sources,
+            "output": out_b,
+        },
     )
 
     # 3 — SCREEN (Nano; it produced none of the work)
@@ -230,15 +261,27 @@ def run_crew(
     )
 
     # 5 — ADJUDICATE (Ultra) only on disagreement; else assemble as-is.
+    # Either way the deliverable ends with the deterministic Sources
+    # section when the run was grounded, so citations survive into the
+    # final answer on both paths.
+    section = sources_section(sources)
     adjudicated = needs_adjudication(review_a, review_b)
     if adjudicated:
+        adjudicate_user = (
+            f"Original task:\n{task}\n\nWorker A output:\n{out_a}\n\nWorker B output:\n{out_b}\n\n"
+            f"Worker A's review of B: {json.dumps(review_a)}\n\nWorker B's review of A: {json.dumps(review_b)}"
+        )
+        if sources:
+            adjudicate_user += (
+                "\n\nSources retrieved via Tavily for this task — cite only "
+                "URLs from this list where you rely on a fact; do not invent "
+                "URLs:\n"
+                + "\n".join(f"- {s['title']} ({s['url']})" for s in sources)
+            )
         deliverable = transport.complete(
             config.planner_model,
             ADJUDICATE_SYSTEM,
-            (
-                f"Original task:\n{task}\n\nWorker A output:\n{out_a}\n\nWorker B output:\n{out_b}\n\n"
-                f"Worker A's review of B: {json.dumps(review_a)}\n\nWorker B's review of A: {json.dumps(review_b)}"
-            ),
+            adjudicate_user,
         )
         chain.append(
             "planner",
@@ -249,8 +292,12 @@ def run_crew(
                 "output": deliverable,
             },
         )
+        if section:
+            deliverable = deliverable.rstrip() + "\n\n" + section
     else:
         deliverable = out_a.rstrip() + "\n\n" + out_b.rstrip() + "\n"
+        if section:
+            deliverable += "\n" + section
         chain.append(
             "crew",
             "assembly",
@@ -267,6 +314,7 @@ def run_crew(
             "deliverable_sha256": hashlib.sha256(deliverable.encode("utf-8")).hexdigest(),
             "adjudicated": adjudicated,
             "grounded_worker_b": grounded,
+            "citations": [s["url"] for s in sources],
         },
     )
     return RunResult(
@@ -275,4 +323,5 @@ def run_crew(
         chain=chain,
         adjudicated=adjudicated,
         grounded_worker_b=grounded,
+        sources=sources,
     )

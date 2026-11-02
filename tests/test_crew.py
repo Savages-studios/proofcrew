@@ -160,5 +160,115 @@ class TestGroundingHonesty(unittest.TestCase):
         self.assertEqual(verify_receipts(result.chain.receipts), [])
 
 
+class MessyTavily:
+    """Search results with a duplicate URL and an entry with no URL."""
+
+    def search(self, query: str, max_results: int = 5) -> list[dict]:
+        return [
+            {"title": "Fact page", "url": "https://example.com/fact", "content": "x"},
+            {"title": "Fact page again", "url": "https://example.com/fact", "content": "y"},
+            {"title": "No link at all", "url": "  ", "content": "z"},
+            {"title": "Second source", "url": "https://example.org/other", "content": "w"},
+        ]
+
+
+class TestCitationsFirstClass(unittest.TestCase):
+    """Citations are structured data, not text that may or may not survive:
+    the Sources section of the final deliverable is built deterministically
+    from exactly the URLs Tavily returned — present on both the assembly
+    and the adjudication path when grounded, absent when not."""
+
+    def test_grounded_agreement_deliverable_carries_sources(self):
+        transport = FakeTransport()
+        result = crew_mod.run_crew(
+            "the task", transport, test_config(), tavily_client=FakeTavily()
+        )
+        self.assertFalse(result.adjudicated)
+        self.assertEqual(
+            result.sources,
+            [{"title": "Fact page", "url": "https://example.com/fact"}],
+        )
+        self.assertIn("## Sources", result.deliverable)
+        self.assertIn("[Fact page](https://example.com/fact)", result.deliverable)
+
+    def test_grounded_adjudication_keeps_sources(self):
+        transport = FakeTransport(
+            verify_b=json.dumps({"verdict": "disagree", "issues": ["A is wrong"]})
+        )
+        result = crew_mod.run_crew(
+            "the task", transport, test_config(), tavily_client=FakeTavily()
+        )
+        self.assertTrue(result.adjudicated)
+        self.assertIn("ADJUDICATED FINAL", result.deliverable)
+        self.assertIn("## Sources", result.deliverable)
+        self.assertIn("https://example.com/fact", result.deliverable)
+        # The adjudicator is told the real source list, so it cites
+        # retrieved URLs rather than inventing its own.
+        adjudicate_prompts = [
+            user for _, system, user in transport.calls
+            if system == crew_mod.ADJUDICATE_SYSTEM
+        ]
+        self.assertTrue(
+            any("https://example.com/fact" in p for p in adjudicate_prompts)
+        )
+
+    def test_ungrounded_deliverable_has_no_sources_section(self):
+        transport = FakeTransport()
+        result = crew_mod.run_crew("the task", transport, test_config())
+        self.assertEqual(result.sources, [])
+        self.assertNotIn("## Sources", result.deliverable)
+        # Honest absence: with no research call, no links appear at all.
+        self.assertNotIn("http://", result.deliverable)
+        self.assertNotIn("https://", result.deliverable)
+
+    def test_sources_recorded_in_receipts(self):
+        transport = FakeTransport()
+        result = crew_mod.run_crew(
+            "the task", transport, test_config(), tavily_client=FakeTavily()
+        )
+        worker_b = next(
+            r for r in result.chain.receipts if r["actor"] == "worker_b" and r["kind"] == "work"
+        )
+        self.assertEqual(
+            worker_b["payload"]["sources"],
+            [{"title": "Fact page", "url": "https://example.com/fact"}],
+        )
+        final = result.chain.receipts[-1]
+        self.assertEqual(final["kind"], "final")
+        self.assertEqual(final["payload"]["citations"], ["https://example.com/fact"])
+        # The final receipt's hash still pins the deliverable as emitted,
+        # Sources section included.
+        import hashlib
+
+        self.assertEqual(
+            final["payload"]["deliverable_sha256"],
+            hashlib.sha256(result.deliverable.encode("utf-8")).hexdigest(),
+        )
+
+    def test_ungrounded_receipts_record_no_citations(self):
+        transport = FakeTransport()
+        result = crew_mod.run_crew("the task", transport, test_config())
+        worker_b = next(
+            r for r in result.chain.receipts if r["actor"] == "worker_b" and r["kind"] == "work"
+        )
+        self.assertEqual(worker_b["payload"]["sources"], [])
+        self.assertEqual(result.chain.receipts[-1]["payload"]["citations"], [])
+
+    def test_source_list_dedupes_and_drops_linkless_results(self):
+        transport = FakeTransport()
+        result = crew_mod.run_crew(
+            "the task", transport, test_config(), tavily_client=MessyTavily()
+        )
+        self.assertEqual(
+            result.sources,
+            [
+                {"title": "Fact page", "url": "https://example.com/fact"},
+                {"title": "Second source", "url": "https://example.org/other"},
+            ],
+        )
+        self.assertEqual(result.deliverable.count("https://example.com/fact"), 1)
+        self.assertNotIn("No link at all", result.deliverable)
+
+
 if __name__ == "__main__":
     unittest.main()

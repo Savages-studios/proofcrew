@@ -28,7 +28,11 @@ discipline:
 - **Proof, not promises.** Every stage appends a receipt to a hash chain:
   each receipt contains the SHA-256 of the previous one, so altering any
   stage after the fact breaks the chain detectably. The final receipt pins
-  the SHA-256 of the deliverable itself.
+  the SHA-256 of the deliverable itself. Stated plainly: the chain is
+  **unkeyed** SHA-256 — tamper-evident, **not signed**. It proves a record
+  wasn't altered after the fact relative to itself; it does not prove
+  *who* produced it. Cryptographic signing of receipts is planned, not
+  built.
 - **Honest grounding.** Worker B grounds its part with a Tavily web search
   *when a Tavily key is configured*. When it isn't, the receipts record
   `grounded: false`. The crew never fakes a research call.
@@ -95,6 +99,16 @@ receipt records `grounded: true`. This is a real runtime call to the Tavily
 API (`https://api.tavily.com/search`). Without a key, no call is made and
 the receipt records `grounded: false` — check it yourself in the receipts.
 
+Citations are first-class, not just text a worker happened to write. The
+sources Tavily actually returned are carried as structured data (title +
+URL): they are recorded in worker B's work receipt, listed in the final
+receipt's `citations`, handed to the adjudicator when it runs (with
+instructions to cite only those URLs), and rendered as a deterministic
+**Sources** section at the end of the final deliverable — on both the
+assembly path and the adjudication path, so source links survive into the
+final answer. The section is built only from retrieved URLs; on an
+ungrounded run there is no Sources section at all.
+
 ## Setup
 
 Requirements: Python 3.10+. One dependency: the `openai` SDK (used only to
@@ -151,7 +165,75 @@ python3 verify_receipts.py proofcrew-out/receipts.jsonl
 Edit one byte of any receipt and re-run: it reports `CHAIN INVALID` and
 names the broken receipt. The unit tests prove this, including the case
 where an attacker recomputes the tampered receipt's own hash (the next
-link still breaks).
+link still breaks). One honest limit, again: the chain is unkeyed
+SHA-256 — it detects alteration, it does not authenticate the author.
+
+## A worked research trace
+
+*Written for the ODSC × Nebius Hackathon ("build a research agent that
+brings its sources"), which ProofCrew is also entered in. The
+architecture is the pipeline diagrammed above; what follows is one real
+run through it, taken from its own receipt file — nothing reconstructed.*
+
+**The question** (live run, Oct 30, 2026; Nebius Token Factory + Tavily,
+both called at runtime):
+
+> Write a short brief on Nebius Token Factory: what it is, which NVIDIA
+> models it serves, and what makes it different from calling a model
+> provider directly. Base it on current public sources and cite them.
+> Under 300 words.
+
+**Plan — Nemotron 3 Ultra.** Split the brief in two: worker A drafts the
+structural skeleton (definition, role, differentiation logic) with
+placeholders and *no* citations; worker B fills the placeholders from
+current public sources, with inline citations. The plan's search query
+targeted which NVIDIA models Token Factory supports, across 2024–2025
+sources.
+
+**Grounded work — two Nemotron 3 Super workers in parallel.** Worker A's
+receipt records `grounded: false` — it never does the research, by
+design; its output is a skeleton with `[MODEL LIST]`,
+`[DIFFERENTIATOR 1]` placeholders. Worker B ran grounded
+(`grounded: true`): its output cited three sources inline — Nebius's own
+launch article on nebius.com, a SaturnCloud inference-provider
+comparison report, and a rywalker.com research page on Nebius.
+
+**Screen — Nemotron 3 Nano**, which produced none of the work, passed
+*neither* worker: A drew "Vague placeholders, no concrete model list or
+citations"; B drew "Some claims not directly supported by cited
+sources"; cross-cutting flags: "Unsupported claims", "Missing
+citations". The screen is recorded in the chain; it informs, it does
+not gate.
+
+**Cross-verify — each Super checks the other.** Worker B agreed with
+A's skeleton (no issues). Worker A **disagreed** with B, on four
+concrete grounds: B's citations used 【…】 brackets instead of the
+requested […] style; the claim that Token Factory serves the Nemotron
+family lacked a direct confirming source; the SaturnCloud report does
+not discuss Token Factory's features specifically; and rywalker.com is
+not an authoritative source.
+
+**Adjudication — Ultra, invoked only because they disagreed.** The
+final brief is 139 words, and the adjudicator resolved the
+citation dispute by narrowing, not defending: the shipped answer cites
+only the Nebius newsroom source, re-anchoring the per-token pricing,
+unified token budget, and no-lock-in claims to it, and dropping the
+SaturnCloud and rywalker citations entirely.
+
+**The proof.** Eight receipts — plan → work → work → screen → verify →
+verify → adjudication → final. The final receipt pins the deliverable's
+SHA-256 (`ac3b3b3b…e0463d`), and the chain re-verifies as VALID with the
+stdlib-only script above. The receipts are unkeyed SHA-256: they prove
+this record wasn't altered after the run, relative to itself — they do
+not prove who ran it. Signing is planned, not built, and this trace
+doesn't claim otherwise.
+
+One timing note: this run predates the structured-citations change
+described under "How Tavily is used" — in this record the citations
+live in worker B's text and the adjudicator's answer. Current runs
+additionally carry the retrieved sources as structured data in the
+receipts and end the deliverable with the deterministic Sources
+section.
 
 ## Tests
 
@@ -159,13 +241,17 @@ link still breaks).
 python3 -m unittest discover -s tests -v
 ```
 
-15 tests, no network, no API key: the hash chain (valid chain passes;
+21 tests, no network, no API key: the hash chain (valid chain passes;
 tampered payload, tampered hash, rehashed tamper, and dropped receipt all
 fail), the shipped `verify_receipts.py` against real files (accepts valid,
 rejects tampered), the adjudication gate (adjudicator fires only on
-disagreement; unparseable reviews escalate), and grounding honesty
+disagreement; unparseable reviews escalate), grounding honesty
 (`grounded: false` without a Tavily key; research text reaches worker B
-with one). Test doubles live in `tests/` only — never in the shipped path.
+with one), and citations (a grounded run's Sources section carries exactly
+the retrieved URLs into the final deliverable on both the assembly and
+adjudication paths and records them in the receipts; an ungrounded run
+emits no Sources section and no links). Test doubles live in `tests/`
+only — never in the shipped path.
 
 ## Project layout
 
