@@ -23,7 +23,11 @@ the adjudicator's prompt when it runs, and into a deterministic Sources
 section appended to the final deliverable on both the assembly and the
 adjudication path — so source links survive into the final answer. The
 section is built only from retrieved URLs; on an ungrounded run there
-is no Sources section at all. The crew never invents a citation.
+is no Sources section at all, and when the screener's structured
+verdict is that the retrieved evidence is insufficient, the Sources
+section and the final receipt's citations are suppressed together —
+the crew never attaches off-point links to an honest "insufficient
+evidence" answer, and it never invents a citation.
 
 Every stage appends a hash-chained receipt (see receipts.py).
 """
@@ -50,8 +54,9 @@ Your output will be screened by an independent model and cross-verified by a pee
 
 SCREEN_SYSTEM = """You are an independent screener in ProofCrew. You produced none of the work below; your only job is to screen it.
 Flag factual errors, missing pieces, unsupported claims, and incoherence in each worker's output.
+For worker_b, also judge "evidence_sufficient": true when the web sources retrieved for worker B are on-point for its part and support answering it — gaps or unsupported side-claims in worker B's output are screening concerns for pass/flags, not insufficiency. Judge false only when the retrieved sources do not actually address the task AND worker B's correct conclusion is that the evidence is insufficient: it declines to answer from them instead of inventing figures.
 Respond with JSON only:
-{"worker_a": {"pass": true, "notes": "<short>"}, "worker_b": {"pass": true, "notes": "<short>"}, "flags": ["<any cross-cutting concern>"]}"""
+{"worker_a": {"pass": true, "notes": "<short>"}, "worker_b": {"pass": true, "evidence_sufficient": true, "notes": "<short>"}, "flags": ["<any cross-cutting concern>"]}"""
 
 VERIFY_SYSTEM = """You are cross-verifying a peer worker's output in ProofCrew. You did not write this output, and you must never verify your own work — that is the crew's founding rule.
 Check the output against the original task: factual errors, omissions, contradictions, unsupported claims.
@@ -112,6 +117,25 @@ def verdict_of(review: dict | None) -> str:
 def needs_adjudication(review_a_on_b: dict | None, review_b_on_a: dict | None) -> bool:
     """The adjudicator is called ONLY when cross-verification disagrees."""
     return verdict_of(review_a_on_b) != "agree" or verdict_of(review_b_on_a) != "agree"
+
+
+def evidence_sufficient(screen: dict | None) -> bool:
+    """The screener's structured verdict on the grounded evidence.
+
+    True unless the screener explicitly reports that worker B's
+    retrieved sources do not support answering its part
+    (``evidence_sufficient: false`` in worker B's screen entry — the
+    case where retrieval returned pages but none of them on-point and
+    worker B correctly concluded the evidence is insufficient).
+    A missing field — a legacy screen, a recorded fixture, an
+    unparseable response — keeps today's behavior exactly: the
+    citations stand. Only an explicit false gates them off."""
+    if not screen:
+        return True
+    worker_b = screen.get("worker_b")
+    if not isinstance(worker_b, dict):
+        return True
+    return worker_b.get("evidence_sufficient") is not False
 
 
 def sources_section(sources: list[dict]) -> str:
@@ -209,12 +233,17 @@ def run_crew(
         SCREEN_SYSTEM,
         f"Original task:\n{task}\n\nWorker A output:\n{out_a}\n\nWorker B output:\n{out_b}",
     )
+    screen = extract_json(screen_raw)
     chain.append(
         "screener",
         "screen",
         {
             "model": config.screener_model,
-            "screen": extract_json(screen_raw) or {"raw": screen_raw},
+            # The parsed screen — including the screener's
+            # evidence_sufficient verdict when it renders one — is
+            # recorded verbatim, so the citation gate below is
+            # auditable from the chain.
+            "screen": screen or {"raw": screen_raw},
         },
     )
 
@@ -263,20 +292,29 @@ def run_crew(
     # 5 — ADJUDICATE (Ultra) only on disagreement; else assemble as-is.
     # Either way the deliverable ends with the deterministic Sources
     # section when the run was grounded, so citations survive into the
-    # final answer on both paths.
-    section = sources_section(sources)
+    # final answer on both paths. One gate applies to every consumer of
+    # the source list together: when the screener's structured verdict
+    # is that the retrieved evidence is insufficient (worker B rightly
+    # declined), the deliverable carries no Sources section, the
+    # adjudicator is not handed the off-point list to cite, and the
+    # final receipt's citations are empty — the citations == Sources
+    # pin holds in the grounded, insufficient, and ungrounded cases.
+    # Worker B's receipt above still records what was actually
+    # retrieved; the gate governs citation, not the audit trail.
+    cited = sources if evidence_sufficient(screen) else []
+    section = sources_section(cited)
     adjudicated = needs_adjudication(review_a, review_b)
     if adjudicated:
         adjudicate_user = (
             f"Original task:\n{task}\n\nWorker A output:\n{out_a}\n\nWorker B output:\n{out_b}\n\n"
             f"Worker A's review of B: {json.dumps(review_a)}\n\nWorker B's review of A: {json.dumps(review_b)}"
         )
-        if sources:
+        if cited:
             adjudicate_user += (
                 "\n\nSources retrieved via Tavily for this task — cite only "
                 "URLs from this list where you rely on a fact; do not invent "
                 "URLs:\n"
-                + "\n".join(f"- {s['title']} ({s['url']})" for s in sources)
+                + "\n".join(f"- {s['title']} ({s['url']})" for s in cited)
             )
         deliverable = transport.complete(
             config.planner_model,
@@ -314,7 +352,7 @@ def run_crew(
             "deliverable_sha256": hashlib.sha256(deliverable.encode("utf-8")).hexdigest(),
             "adjudicated": adjudicated,
             "grounded_worker_b": grounded,
-            "citations": [s["url"] for s in sources],
+            "citations": [s["url"] for s in cited],
         },
     )
     return RunResult(
