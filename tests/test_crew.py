@@ -38,13 +38,20 @@ AGREE = json.dumps({"verdict": "agree", "issues": []})
 class FakeTransport:
     """Records every call; responds from a script keyed by system prompt."""
 
-    def __init__(self, verify_a=AGREE, verify_b=AGREE, adjudicated_text="ADJUDICATED FINAL"):
+    def __init__(
+        self,
+        verify_a=AGREE,
+        verify_b=AGREE,
+        adjudicated_text="ADJUDICATED FINAL",
+        screen_json=SCREEN_JSON,
+    ):
         self.calls: list[tuple[str, str, str]] = []
         self._verify_by_target_output = {
             "Output B": verify_a,  # worker A verifies B's output
             "Output A": verify_b,  # worker B verifies A's output
         }
         self._adjudicated_text = adjudicated_text
+        self._screen_json = screen_json
 
     def complete(self, model: str, system: str, user: str) -> str:
         self.calls.append((model, system, user))
@@ -53,7 +60,7 @@ class FakeTransport:
         if system == crew_mod.WORKER_SYSTEM:
             return "Output A" if "PART-A" in user else "Output B"
         if system == crew_mod.SCREEN_SYSTEM:
-            return SCREEN_JSON
+            return self._screen_json
         if system == crew_mod.VERIFY_SYSTEM:
             for marker, response in self._verify_by_target_output.items():
                 if marker in user:
@@ -268,6 +275,129 @@ class TestCitationsFirstClass(unittest.TestCase):
         )
         self.assertEqual(result.deliverable.count("https://example.com/fact"), 1)
         self.assertNotIn("No link at all", result.deliverable)
+
+
+SCREEN_SUFFICIENT = json.dumps(
+    {
+        "worker_a": {"pass": True, "notes": "fine"},
+        "worker_b": {
+            "pass": True,
+            "evidence_sufficient": True,
+            "notes": "sources support the answer",
+        },
+        "flags": [],
+    }
+)
+SCREEN_INSUFFICIENT = json.dumps(
+    {
+        "worker_a": {"pass": True, "notes": "fine"},
+        "worker_b": {
+            "pass": True,
+            "evidence_sufficient": False,
+            "notes": "retrieved sources do not answer the task; worker "
+            "correctly concludes the evidence is insufficient",
+        },
+        "flags": [],
+    }
+)
+
+
+class TestEvidenceSufficiencyGate(unittest.TestCase):
+    """The screener's structured evidence_sufficient verdict gates every
+    consumer of the source list together: an explicit false (retrieval
+    returned pages, none on-point, worker B rightly declines) means no
+    Sources section and empty final-receipt citations on BOTH the
+    assembly and adjudication paths — while worker B's receipt keeps
+    recording what was actually retrieved. True, or the field absent
+    (legacy screens and fixtures), behavior is exactly as before."""
+
+    def _screen_receipt(self, result):
+        return next(
+            r for r in result.chain.receipts
+            if r["actor"] == "screener" and r["kind"] == "screen"
+        )
+
+    def test_insufficient_verdict_suppresses_sources_and_citations(self):
+        transport = FakeTransport(screen_json=SCREEN_INSUFFICIENT)
+        result = crew_mod.run_crew(
+            "the task", transport, test_config(), tavily_client=FakeTavily()
+        )
+        # Retrieval happened and is still honestly recorded...
+        self.assertFalse(result.adjudicated)
+        self.assertEqual(
+            result.sources,
+            [{"title": "Fact page", "url": "https://example.com/fact"}],
+        )
+        worker_b = next(
+            r for r in result.chain.receipts if r["actor"] == "worker_b" and r["kind"] == "work"
+        )
+        self.assertEqual(
+            worker_b["payload"]["sources"],
+            [{"title": "Fact page", "url": "https://example.com/fact"}],
+        )
+        # ...but nothing is cited: no Sources section, empty citations.
+        self.assertNotIn("## Sources", result.deliverable)
+        self.assertNotIn("https://example.com/fact", result.deliverable)
+        self.assertEqual(result.chain.receipts[-1]["payload"]["citations"], [])
+        # The verdict itself is recorded in the screen receipt.
+        screen = self._screen_receipt(result)
+        self.assertIs(
+            screen["payload"]["screen"]["worker_b"]["evidence_sufficient"], False
+        )
+
+    def test_insufficient_verdict_suppresses_on_adjudication_path(self):
+        transport = FakeTransport(
+            verify_b=json.dumps({"verdict": "disagree", "issues": ["A is wrong"]}),
+            screen_json=SCREEN_INSUFFICIENT,
+        )
+        result = crew_mod.run_crew(
+            "the task", transport, test_config(), tavily_client=FakeTavily()
+        )
+        self.assertTrue(result.adjudicated)
+        self.assertEqual(result.deliverable, "ADJUDICATED FINAL")
+        self.assertNotIn("## Sources", result.deliverable)
+        self.assertEqual(result.chain.receipts[-1]["payload"]["citations"], [])
+        # The adjudicator is not handed the off-point list to cite.
+        adjudicate_prompts = [
+            user for _, system, user in transport.calls
+            if system == crew_mod.ADJUDICATE_SYSTEM
+        ]
+        self.assertFalse(
+            any("https://example.com/fact" in p for p in adjudicate_prompts)
+        )
+
+    def test_sufficient_verdict_keeps_sources_and_citations(self):
+        transport = FakeTransport(screen_json=SCREEN_SUFFICIENT)
+        result = crew_mod.run_crew(
+            "the task", transport, test_config(), tavily_client=FakeTavily()
+        )
+        self.assertIn("## Sources", result.deliverable)
+        self.assertIn("[Fact page](https://example.com/fact)", result.deliverable)
+        self.assertEqual(
+            result.chain.receipts[-1]["payload"]["citations"],
+            ["https://example.com/fact"],
+        )
+        screen = self._screen_receipt(result)
+        self.assertIs(
+            screen["payload"]["screen"]["worker_b"]["evidence_sufficient"], True
+        )
+
+    def test_absent_field_keeps_legacy_behavior(self):
+        # SCREEN_JSON (the default fixture) carries no evidence_sufficient
+        # field at all — legacy screens and recorded runs behave as today.
+        transport = FakeTransport()
+        result = crew_mod.run_crew(
+            "the task", transport, test_config(), tavily_client=FakeTavily()
+        )
+        self.assertIn("## Sources", result.deliverable)
+        self.assertEqual(
+            result.chain.receipts[-1]["payload"]["citations"],
+            ["https://example.com/fact"],
+        )
+        screen = self._screen_receipt(result)
+        self.assertNotIn(
+            "evidence_sufficient", screen["payload"]["screen"]["worker_b"]
+        )
 
 
 if __name__ == "__main__":
