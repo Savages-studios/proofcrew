@@ -53,7 +53,7 @@ class TestAttestation(unittest.TestCase):
         receipts, deliverable, private, public = fixture()
         signed = sign_attestation(receipts, deliverable, private)
         forged = copy.deepcopy(signed)
-        forged["signature_base64"] = base64.b64encode(b"\\x00" * 64).decode("ascii")
+        forged["signature_base64"] = base64.b64encode(bytes(64)).decode("ascii")
         self.assertTrue(verify_attestation(receipts, deliverable, forged, public))
         forged["signature_base64"] = "not base64!"
         self.assertTrue(verify_attestation(receipts, deliverable, forged, public))
