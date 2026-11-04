@@ -9,20 +9,23 @@ on the page. State is a single in-memory last run — deliberately tiny so
 the app idles in ~50 MB and runs happily on a 1 GB box.
 """
 import html
+import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from proofcrew.config import Config
-from proofcrew.crew import run_crew
+from proofcrew.signed_run import load_signing_key, run_signed_crew
 from proofcrew.receipts import verify_receipts
 from proofcrew.tavily import TavilyClient
 from proofcrew.transport import TokenFactoryTransport
 
-STATE: dict = {"result": None, "error": None}
+STATE: dict = {"result": None, "attestation": None, "error": None}
+RUN_LOCK = threading.Lock()
 
 CSS = (
     "body{font-family:system-ui,sans-serif;max-width:840px;margin:2rem auto;"
@@ -33,7 +36,8 @@ CSS = (
 )
 
 
-def render_page() -> bytes:
+def render_page(state=None) -> bytes:
+    state = STATE.copy() if state is None else state
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -49,9 +53,9 @@ def render_page() -> bytes:
         "<textarea name='task' rows='4' placeholder='Describe the task for the crew...'></textarea>"
         "<br><button type='submit'>Run the crew</button></form>",
     ]
-    if STATE["error"]:
-        parts.append(f"<p class='bad'>{html.escape(STATE['error'])}</p>")
-    result = STATE["result"]
+    if state["error"]:
+        parts.append(f"<p class='bad'>{html.escape(state['error'])}</p>")
+    result = state["result"]
     if result is not None:
         problems = verify_receipts(result.chain.receipts)
         verdict = (
@@ -73,6 +77,8 @@ def render_page() -> bytes:
             "<p><a href='/receipts'>Download receipts.jsonl</a> — re-verify "
             "anywhere with <code>python3 verify_receipts.py receipts.jsonl</code> "
             "(standard library only).</p>",
+            "<p><a href='/attestation'>Download attestation.json</a> · "
+            "<a href='/deliverable'>Download deliverable.md</a></p>",
         ]
     parts.append("</body></html>")
     return "".join(parts).encode("utf-8")
@@ -89,24 +95,36 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/receipts" and STATE["result"] is not None:
-            data = STATE["result"].chain.to_jsonl().encode("utf-8")
+        state = STATE.copy()
+        if self.path == "/attestation" and state["attestation"] is not None:
+            self._send((json.dumps(state["attestation"], sort_keys=True, indent=2) + "\n").encode(), content_type="application/json")
+            return
+        if self.path == "/deliverable" and state["result"] is not None:
+            self._send(state["result"].deliverable.encode("utf-8"), content_type="text/plain; charset=utf-8")
+            return
+        if self.path == "/receipts" and state["result"] is not None:
+            data = state["result"].chain.to_jsonl().encode("utf-8")
             self._send(
                 data,
                 content_type="application/json",
                 extra={"Content-Disposition": "attachment; filename=receipts.jsonl"},
             )
             return
-        self._send(render_page())
+        self._send(render_page(state))
 
     def do_POST(self):
+        # A single last-run state must never combine concurrent runs.
+        with RUN_LOCK:
+            self._run_post()
+
+    def _run_post(self):
         if self.path != "/run":
             self._send(b"not found", status=404, content_type="text/plain")
             return
         length = int(self.headers.get("Content-Length", 0))
         form = parse_qs(self.rfile.read(length).decode("utf-8"))
         task = (form.get("task") or [""])[0].strip()
-        STATE["error"] = None
+        STATE.update(error=None, result=None, attestation=None)
         if not task:
             STATE["error"] = "Please enter a task."
         else:
@@ -117,13 +135,15 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 try:
+                    keys = load_signing_key(os.environ.get("PROOFCREW_SIGNING_KEY"))
                     transport = TokenFactoryTransport(config.api_key, config.base_url)
                     tavily = (
                         TavilyClient(config.tavily_api_key)
                         if config.tavily_api_key
                         else None
                     )
-                    STATE["result"] = run_crew(task, transport, config, tavily)
+                    result, attestation = run_signed_crew(task, transport, config, tavily, keys)
+                    STATE.update(attestation=attestation, result=result)
                 except Exception as exc:  # surface, don't crash the demo
                     STATE["error"] = f"Run failed: {exc}"
         self._send(b"", status=303, extra={"Location": "/"})

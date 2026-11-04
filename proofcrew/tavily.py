@@ -7,7 +7,6 @@ If no TAVILY_API_KEY is configured, ProofCrew never constructs this
 client, worker B runs ungrounded, and the receipts say so."""
 from __future__ import annotations
 
-import httpx
 
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
@@ -18,6 +17,7 @@ class TavilyClient:
         self._timeout = timeout
 
     def search(self, query: str, max_results: int = 5) -> list[dict]:
+        import httpx  # Needed only for a live Tavily search.
         payload = {
             "api_key": self._api_key,
             "query": query,

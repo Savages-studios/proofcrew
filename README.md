@@ -6,8 +6,9 @@ Give ProofCrew a task. A planner splits it in two, two workers execute in
 parallel, an independent screener checks their work, the workers
 cross-verify *each other*, and the planner adjudicates **only** if they
 disagree. What you get back is the deliverable **plus a SHA-256 hash-chained
-receipt file** that anyone can re-verify with a standard-library-only script
-— no ProofCrew install, no network, no trust required.
+receipt file and an Ed25519 signed attestation**. Verify the chain offline
+with the standard library, and verify the signature using `cryptography` and
+an independently trusted public key.
 
 Built for the **Nebius × NVIDIA Global AI Hackathon** (Track: Best Apps and
 Agents).
@@ -31,8 +32,8 @@ discipline:
   the SHA-256 of the deliverable itself. Stated plainly: the chain is
   **unkeyed** SHA-256 — tamper-evident, **not signed**. It proves a record
   wasn't altered after the fact relative to itself; it does not prove
-  *who* produced it. Cryptographic signing of receipts is planned, not
-  built.
+  *who* produced it. The separate Ed25519 attestation authenticates the chain and
+  deliverable against an independently trusted operator public key.
 - **Honest grounding.** Worker B grounds its part with a Tavily web search
   *when a Tavily key is configured*. When it isn't, the receipts record
   `grounded: false`. The crew never fakes a research call.
@@ -86,9 +87,9 @@ configurable via environment, see `.env.example`):
 
 | Role | Default model | Job |
 |---|---|---|
-| Planner / adjudicator | `nvidia/nemotron-3-ultra-550b-a55b` | Split the task; resolve cross-verification disputes |
+| Planner / adjudicator | `nvidia/Nemotron-3-Ultra-550b-a55b` | Split the task; resolve cross-verification disputes |
 | Workers / cross-verifiers | `nvidia/nemotron-3-super-120b-a12b` | Execute the two parts in parallel; verify each other's output |
-| Screener | `nvidia/nemotron-3-nano-30b-a3b` | Fast independent screen of both outputs |
+| Screener | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | Fast independent screen of both outputs |
 
 ## How Tavily is used
 
@@ -120,8 +121,9 @@ git clone https://github.com/sa6ag9/proofcrew.git
 cd proofcrew
 pip install -r requirements.txt
 
-cp .env.example .env   # then fill in your keys, or export them directly
+cp .env.example .env   # reference only: export values below; .env is not loaded automatically
 export TOKENFACTORY_API_KEY=<your Nebius Token Factory key>
+export PROOFCREW_SIGNING_KEY=/secure/path/operator-ed25519.pem
 export TAVILY_API_KEY=<optional, enables grounded worker B>
 ```
 
@@ -136,7 +138,7 @@ Command line:
 ```bash
 python3 run.py "Write a launch brief for a fictional coffee subscription for remote workers"
 # -> prints the deliverable, writes proofcrew-out/deliverable.md
-#    and proofcrew-out/receipts.jsonl, self-checks the chain
+#    proofcrew-out/receipts.jsonl and proofcrew-out/attestation.json
 ```
 
 Web UI (stdlib `http.server`, idles in ~50 MB — happy on a 1 GB box):
@@ -166,7 +168,14 @@ Edit one byte of any receipt and re-run: it reports `CHAIN INVALID` and
 names the broken receipt. The unit tests prove this, including the case
 where an attacker recomputes the tampered receipt's own hash (the next
 link still breaks). One honest limit, again: the chain is unkeyed
-SHA-256 — it detects alteration, it does not authenticate the author.
+SHA-256 — it detects alteration, it does not authenticate the author. Verify the signed attestation separately:
+
+```bash
+python3 attest_receipts.py verify proofcrew-out/receipts.jsonl proofcrew-out/deliverable.md proofcrew-out/attestation.json /trusted/operator-ed25519-public.pem
+```
+
+Pin the public key through an independent trusted channel. See
+[Signed evidence](docs/SIGNED_EVIDENCE_EXPORT.md) for key preparation and the live-run checklist.
 
 ## A worked research trace
 
@@ -225,8 +234,7 @@ verify → adjudication → final. The final receipt pins the deliverable's
 SHA-256 (`ac3b3b3b…e0463d`), and the chain re-verifies as VALID with the
 stdlib-only script above. The receipts are unkeyed SHA-256: they prove
 this record wasn't altered after the run, relative to itself — they do
-not prove who ran it. Signing is planned, not built, and this trace
-doesn't claim otherwise.
+not prove who ran it. This historical trace predates automatic signing and does not claim an attestation.
 
 One timing note: this run predates the structured-citations change
 described under "How Tavily is used" — in this record the citations
@@ -241,7 +249,7 @@ section.
 python3 -m unittest discover -s tests -v
 ```
 
-21 tests, no network, no API key: the hash chain (valid chain passes;
+The offline tests require no network or API key: the hash chain (valid chain passes;
 tampered payload, tampered hash, rehashed tamper, and dropped receipt all
 fail), the shipped `verify_receipts.py` against real files (accepts valid,
 rejects tampered), the adjudication gate (adjudicator fires only on
