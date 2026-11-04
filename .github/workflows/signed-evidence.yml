@@ -1,0 +1,28 @@
+name: ProofCrew signed evidence acceptance
+on:
+  push:
+    branches: [gpt/signed-evidence-export-20261103]
+  pull_request:
+    paths:
+      - 'proofcrew/attestation.py'
+      - 'attest_receipts.py'
+      - 'tests/test_attestation.py'
+      - '.github/workflows/signed-evidence.yml'
+permissions:
+  contents: read
+jobs:
+  signed-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Record exact checked-out source SHA
+        run: git rev-parse HEAD
+      - name: Install actual signature dependency
+        run: python -m pip install -r requirements.txt
+      - name: Run all source tests including real local Ed25519 signatures
+        run: PYTHONPATH=. python -m unittest discover -s tests -v
