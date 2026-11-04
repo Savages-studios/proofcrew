@@ -3,6 +3,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -56,6 +57,7 @@ class TestSignedRun(unittest.TestCase):
 
     def test_web_failure_clears_previous_success(self):
         class Request:
+            _run_post = app.Handler._run_post
             path = '/run'
             headers = {'Content-Length':'9'}
             rfile = io.BytesIO(b'task=test')
@@ -70,6 +72,7 @@ class TestSignedRun(unittest.TestCase):
 
     def test_web_success_exposes_attestation(self):
         class Request:
+            _run_post = app.Handler._run_post
             path = '/run'
             headers = {'Content-Length':'9'}
             rfile = io.BytesIO(b'task=test')
@@ -80,3 +83,46 @@ class TestSignedRun(unittest.TestCase):
         result = app.STATE['result']
         self.assertIsNotNone(result)
         self.assertEqual(verify_attestation(result.chain.receipts, result.deliverable.encode(), app.STATE['attestation'], self.keys[1]), [])
+
+    def test_concurrent_web_runs_publish_complete_pairs(self):
+        class Request:
+            _run_post = app.Handler._run_post
+            path = '/run'
+            def __init__(self, task):
+                data = ('task=' + task).encode()
+                self.headers = {'Content-Length': str(len(data))}
+                self.rfile = io.BytesIO(data)
+            def _send(self, *args, **kwargs): pass
+
+        entered = threading.Event()
+        release = threading.Event()
+        second_entered = threading.Event()
+        original = app.run_signed_crew
+        def gated(task, transport, config, tavily, keys):
+            if task == 'first':
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError('test did not release first run')
+            else:
+                second_entered.set()
+            return original(task, transport, config, tavily, keys)
+
+        env = {'TOKENFACTORY_API_KEY': 'test-only', 'PROOFCREW_SIGNING_KEY': str(self.keyfile)}
+        with patch.dict(os.environ, env, clear=True), patch.object(app, 'TokenFactoryTransport', side_effect=lambda *a: FakeTransport()), patch.object(app, 'run_signed_crew', side_effect=gated):
+            first = threading.Thread(target=app.Handler.do_POST, args=(Request('first'),))
+            second = threading.Thread(target=app.Handler.do_POST, args=(Request('second'),))
+            first.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                second.start()
+                self.assertFalse(second_entered.wait(0.1))
+            finally:
+                release.set()
+                first.join(3)
+                if second.ident is not None:
+                    second.join(3)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+        result, attestation = app.STATE['result'], app.STATE['attestation']
+        self.assertEqual(result.task, 'second')
+        self.assertEqual(verify_attestation(result.chain.receipts, result.deliverable.encode(), attestation, self.keys[1]), [])
