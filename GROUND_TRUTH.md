@@ -17,7 +17,7 @@ individually. Public, MIT licensed. This repo postdates the
 ## Verified current state
 
 - **Head:** `3db2fc19b19b8a5e6d7cde050acf212d4ae58035` — squash merge of PR #4. Tree = 23 blobs. (PR #3, the screener sources fix, was merged earlier; pre-train main was `7dfe2741`.)
-- **Open PRs:** none (PR #4 merged 2026-11-03).
+- **Open PRs:** #5 (draft) — "Fix first-run model IDs and sign completed ProofCrew runs". UNVERIFIED, pending Tights verification. (PR #4 merged 2026-11-03.)
 - **Tests (Tights local run, 2026-11-03, `pytest tests/ -q`):** **PR #4 head: 33 passed; baseline control on `7dfe2741`: 26 passed.** Zero regressions. (Earlier record: 15/15 at the 2026-10-30/31 build state; the suite has grown since.)
   after the Tavily transport patch.
 - **Live runs:** two full runs against the Nebius Token Factory API
@@ -47,7 +47,7 @@ individually. Public, MIT licensed. This repo postdates the
 
 ## Parked PRs
 
-None open.
+- **#5** (draft) — "Fix first-run model IDs and sign completed ProofCrew runs". UNVERIFIED, pending Tights verification.
 
 
 ## Where it is going
