@@ -1,7 +1,7 @@
 # proofcrew — Ground Truth
 
 **Last verified:** 2026-11-03 (Tonight Sprint merge train — Tights first-hand local verification: diff read in full, pytest run on exact PR head + baseline control, post-merge tree proof; earlier sections carry their own dates)
-**Canonical branch:** main @ 3db2fc19b19b8a5e6d7cde050acf212d4ae58035
+**Canonical branch:** main @ f39bde7425bc990bbba31628081eedcb68efdd46 (post-PR #5 merge; this file's own commit sits on top)
 
 ## What this repo is
 
@@ -17,7 +17,7 @@ individually. Public, MIT licensed. This repo postdates the
 ## Verified current state
 
 - **Head:** `3db2fc19b19b8a5e6d7cde050acf212d4ae58035` — squash merge of PR #4. Tree = 23 blobs. (PR #3, the screener sources fix, was merged earlier; pre-train main was `7dfe2741`.)
-- **Open PRs:** #5 (draft) — "Fix first-run model IDs and sign completed ProofCrew runs". UNVERIFIED, pending Tights verification. (PR #4 merged 2026-11-03.)
+- **Open PRs:** none. **PR #5 MERGED 2026-11-04** (merge `f39bde7425bc`) — Astra-2 Order 1: shipped model IDs corrected to exact case (planner `nvidia/Nemotron-3-Ultra-550b-a55b`, screener `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`; worker ID unchanged) with no case-normalization anywhere, and signed runs wired fail-closed at both entry points. Verified first-hand (Blitz Wave 3): suites 33 → 40 passed, sabotage controls decisive (bad key → exit 2, transport never constructed; one-byte tamper → verifier exit 1), claims 13/13, real executed CI green on the head. The one live signed run remains STAGED-ONLY by the filer's honest disclosure — execution needs an operator key + Nebius key + spend authorization, targeted before the Nov 20 hackathon submission. (PR #4 merged 2026-11-03.)
 - **Tests (Tights local run, 2026-11-03, `pytest tests/ -q`):** **PR #4 head: 33 passed; baseline control on `7dfe2741`: 26 passed.** Zero regressions. (Earlier record: 15/15 at the 2026-10-30/31 build state; the suite has grown since.)
   after the Tavily transport patch.
 - **Live runs:** two full runs against the Nebius Token Factory API
@@ -47,7 +47,7 @@ individually. Public, MIT licensed. This repo postdates the
 
 ## Parked PRs
 
-- **#5** (draft) — "Fix first-run model IDs and sign completed ProofCrew runs". UNVERIFIED, pending Tights verification.
+- None — PR #5 merged 2026-11-04 (see Verified current state).
 
 
 ## Where it is going
