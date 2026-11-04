@@ -9,6 +9,7 @@ on the page. State is a single in-memory last run — deliberately tiny so
 the app idles in ~50 MB and runs happily on a 1 GB box.
 """
 import html
+import json
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,12 +18,12 @@ from urllib.parse import parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from proofcrew.config import Config
-from proofcrew.crew import run_crew
+from proofcrew.signed_run import load_signing_key, run_signed_crew
 from proofcrew.receipts import verify_receipts
 from proofcrew.tavily import TavilyClient
 from proofcrew.transport import TokenFactoryTransport
 
-STATE: dict = {"result": None, "error": None}
+STATE: dict = {"result": None, "attestation": None, "error": None}
 
 CSS = (
     "body{font-family:system-ui,sans-serif;max-width:840px;margin:2rem auto;"
@@ -73,6 +74,8 @@ def render_page() -> bytes:
             "<p><a href='/receipts'>Download receipts.jsonl</a> — re-verify "
             "anywhere with <code>python3 verify_receipts.py receipts.jsonl</code> "
             "(standard library only).</p>",
+            "<p><a href='/attestation'>Download attestation.json</a> · "
+            "<a href='/deliverable'>Download deliverable.md</a></p>",
         ]
     parts.append("</body></html>")
     return "".join(parts).encode("utf-8")
@@ -89,6 +92,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == "/attestation" and STATE["attestation"] is not None:
+            self._send((json.dumps(STATE["attestation"], sort_keys=True, indent=2) + "\n").encode(), content_type="application/json")
+            return
+        if self.path == "/deliverable" and STATE["result"] is not None:
+            self._send(STATE["result"].deliverable.encode("utf-8"), content_type="text/plain; charset=utf-8")
+            return
         if self.path == "/receipts" and STATE["result"] is not None:
             data = STATE["result"].chain.to_jsonl().encode("utf-8")
             self._send(
@@ -107,6 +116,8 @@ class Handler(BaseHTTPRequestHandler):
         form = parse_qs(self.rfile.read(length).decode("utf-8"))
         task = (form.get("task") or [""])[0].strip()
         STATE["error"] = None
+        STATE["result"] = None
+        STATE["attestation"] = None
         if not task:
             STATE["error"] = "Please enter a task."
         else:
@@ -117,13 +128,16 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 try:
+                    keys = load_signing_key(os.environ.get("PROOFCREW_SIGNING_KEY"))
                     transport = TokenFactoryTransport(config.api_key, config.base_url)
                     tavily = (
                         TavilyClient(config.tavily_api_key)
                         if config.tavily_api_key
                         else None
                     )
-                    STATE["result"] = run_crew(task, transport, config, tavily)
+                    result, attestation = run_signed_crew(task, transport, config, tavily, keys)
+                    STATE["attestation"] = attestation
+                    STATE["result"] = result
                 except Exception as exc:  # surface, don't crash the demo
                     STATE["error"] = f"Run failed: {exc}"
         self._send(b"", status=303, extra={"Location": "/"})

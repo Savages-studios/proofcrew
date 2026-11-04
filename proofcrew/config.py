@@ -16,9 +16,9 @@ import os
 from dataclasses import dataclass
 
 DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
-DEFAULT_PLANNER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
+DEFAULT_PLANNER_MODEL = "nvidia/Nemotron-3-Ultra-550b-a55b"
 DEFAULT_WORKER_MODEL = "nvidia/nemotron-3-super-120b-a12b"
-DEFAULT_SCREENER_MODEL = "nvidia/nemotron-3-nano-30b-a3b"
+DEFAULT_SCREENER_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
 
 
 @dataclass(frozen=True)
