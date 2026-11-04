@@ -1,7 +1,7 @@
 # proofcrew — Ground Truth
 
-**Last verified:** 2026-11-01 (live API state; build/submission record 2026-10-30/31)
-**Canonical branch:** main @ d965bf9f3d
+**Last verified:** 2026-11-03 (Tonight Sprint merge train — Tights first-hand local verification: diff read in full, pytest run on exact PR head + baseline control, post-merge tree proof; earlier sections carry their own dates)
+**Canonical branch:** main @ 3db2fc19b19b8a5e6d7cde050acf212d4ae58035
 
 ## What this repo is
 
@@ -16,9 +16,9 @@ individually. Public, MIT licensed. This repo postdates the
 
 ## Verified current state
 
-- **Head:** `d965bf9f3d`. Tree = 17 blobs.
-- **Open PRs:** none.
-- **Tests: 15/15 pass** — re-run personally by Tights, including
+- **Head:** `3db2fc19b19b8a5e6d7cde050acf212d4ae58035` — squash merge of PR #4. Tree = 23 blobs. (PR #3, the screener sources fix, was merged earlier; pre-train main was `7dfe2741`.)
+- **Open PRs:** none (PR #4 merged 2026-11-03).
+- **Tests (Tights local run, 2026-11-03, `pytest tests/ -q`):** **PR #4 head: 33 passed; baseline control on `7dfe2741`: 26 passed.** Zero regressions. (Earlier record: 15/15 at the 2026-10-30/31 build state; the suite has grown since.)
   after the Tavily transport patch.
 - **Live runs:** two full runs against the Nebius Token Factory API
   (2026-10-30), each producing 8 receipts with a VALID hash chain;
@@ -41,13 +41,14 @@ individually. Public, MIT licensed. This repo postdates the
 - Model-ID casing matters: the live API's exact IDs differ in case
   from the code defaults and must be passed via environment.
 
-## Merged in the 2026-11-01 train
+## Merged in the 2026-11-03 Tonight Sprint train
 
-Nothing.
+- **#4** — squash-merged at `3db2fc19b19b8a5e6d7cde050acf212d4ae58035` (tree proof PASS, 18 → 23 blobs). Independently verifiable signed evidence packages: domain-separated Ed25519 attestation over the exact receipt chain and deliverable digest, verified against a caller-pinned public key (embedded keys are never trusted), plus a clean-room checker CLI and JSON schema. Honest scope, stated in the code and docs: the signature authenticates the designated key and the exact bytes — not model claims, source truth, or settlement. New declared dependency: `cryptography>=42` (verification CLI itself remains stdlib-only). No production signing key exists or is claimed; fixtures are test-only.
 
 ## Parked PRs
 
 None open.
+
 
 ## Where it is going
 
