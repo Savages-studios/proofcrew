@@ -43,6 +43,7 @@ class TestSignedRun(unittest.TestCase):
         out = self.root / 'out'
         from proofcrew.receipts import load_receipts
         self.assertEqual(verify_attestation(load_receipts(out / 'receipts.jsonl'), (out / 'deliverable.md').read_bytes(), json.loads((out / 'attestation.json').read_text()), self.keys[1]), [])
+        self.assertTrue(verify_attestation(load_receipts(out / 'receipts.jsonl'), b'tampered deliverable', json.loads((out / 'attestation.json').read_text()), self.keys[1]))
 
     def test_signing_failure_prevents_cli_success_and_output(self):
         env = {'TOKENFACTORY_API_KEY':'test-only', 'PROOFCREW_SIGNING_KEY':str(self.keyfile)}
@@ -50,10 +51,31 @@ class TestSignedRun(unittest.TestCase):
             self.assertNotEqual(run.main(['task', '--out', str(self.root / 'out')]), 0)
         self.assertFalse((self.root / 'out').exists())
 
-    def test_missing_key_fails_before_transport(self):
-        with patch.dict(os.environ, {'TOKENFACTORY_API_KEY':'test-only'}, clear=True), patch.object(run, 'TokenFactoryTransport') as transport, contextlib.redirect_stderr(io.StringIO()):
-            self.assertNotEqual(run.main(['task']), 0)
-            transport.assert_not_called()
+    def test_keyless_cli_writes_unsigned_package_and_notice(self):
+        output = io.StringIO()
+        out = self.root / 'unsigned'
+        out.mkdir()
+        (out / 'attestation.json').write_text('stale attestation')
+        with patch.dict(os.environ, {'TOKENFACTORY_API_KEY':'test-only'}, clear=True), patch.object(run, 'TokenFactoryTransport', return_value=FakeTransport()), contextlib.redirect_stdout(output):
+            self.assertEqual(run.main(['task', '--out', str(out)]), 0)
+        self.assertTrue((out / 'deliverable.md').is_file())
+        self.assertTrue((out / 'receipts.jsonl').is_file())
+        self.assertFalse((out / 'attestation.json').exists())
+        self.assertIn('UNSIGNED', output.getvalue())
+
+    def test_keyless_web_run_displays_unsigned_notice(self):
+        class Request:
+            _run_post = app.Handler._run_post
+            path = '/run'
+            headers = {'Content-Length':'9'}
+            rfile = io.BytesIO(b'task=test')
+            def _send(self, *args, **kwargs): pass
+        env = {'TOKENFACTORY_API_KEY':'test-only'}
+        with patch.dict(os.environ, env, clear=True), patch.object(app, 'TokenFactoryTransport', return_value=FakeTransport()):
+            app.Handler.do_POST(Request())
+        self.assertIsNotNone(app.STATE['result'])
+        self.assertIsNone(app.STATE['attestation'])
+        self.assertIn(b'UNSIGNED', app.render_page())
 
     def test_web_failure_clears_previous_success(self):
         class Request:

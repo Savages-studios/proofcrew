@@ -2,7 +2,7 @@
 
 This capability makes the final hash-chain root and exact deliverable bytes independently verifiable against a **trusted, separately distributed Ed25519 public key**. The original `verify_receipts.py` stays standard-library-only and continues to verify unkeyed hash-chain consistency. It cannot authenticate the producer by itself. The new signer/verifier requires `cryptography>=42` and runs offline.
 
-Normal CLI and web runs require `PROOFCREW_SIGNING_KEY`, sign and self-check the result before reporting success, and expose `attestation.json` alongside the deliverable and receipt chain. The public key must be independently pinned. An operator can also manually sign existing `receipts.jsonl` and `deliverable.md` with a separately managed Ed25519 PKCS#8 PEM private key:
+When `PROOFCREW_SIGNING_KEY` is configured, CLI and web runs sign and self-check the result before reporting success, and expose `attestation.json` alongside the deliverable and receipt chain. Without a configured key, runs still produce the deliverable and receipt chain and clearly report that the package is unsigned. The public key must be independently pinned. An operator can also manually sign existing `receipts.jsonl` and `deliverable.md` with a separately managed Ed25519 PKCS#8 PEM private key:
 
 ```bash
 python attest_receipts.py sign proofcrew-out/receipts.jsonl proofcrew-out/deliverable.md /private/operator-ed25519.pem proofcrew-out/attestation.json
