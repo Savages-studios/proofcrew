@@ -77,9 +77,15 @@ def render_page(state=None) -> bytes:
             "<p><a href='/receipts'>Download receipts.jsonl</a> — re-verify "
             "anywhere with <code>python3 verify_receipts.py receipts.jsonl</code> "
             "(standard library only).</p>",
-            "<p><a href='/attestation'>Download attestation.json</a> · "
-            "<a href='/deliverable'>Download deliverable.md</a></p>",
+            "<p><a href='/deliverable'>Download deliverable.md</a></p>",
         ]
+        if state["attestation"] is None:
+            parts.append(
+                "<p class='bad'>Package is UNSIGNED "
+                "(PROOFCREW_SIGNING_KEY is not configured).</p>"
+            )
+        else:
+            parts.append("<p><a href='/attestation'>Download attestation.json</a></p>")
     parts.append("</body></html>")
     return "".join(parts).encode("utf-8")
 
@@ -135,7 +141,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 try:
-                    keys = load_signing_key(os.environ.get("PROOFCREW_SIGNING_KEY"))
+                    signing_key = os.environ.get("PROOFCREW_SIGNING_KEY")
+                    keys = load_signing_key(signing_key) if signing_key else None
                     transport = TokenFactoryTransport(config.api_key, config.base_url)
                     tavily = (
                         TavilyClient(config.tavily_api_key)

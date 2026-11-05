@@ -41,7 +41,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        keys = load_signing_key(os.environ.get("PROOFCREW_SIGNING_KEY"))
+        signing_key = os.environ.get("PROOFCREW_SIGNING_KEY")
+        keys = load_signing_key(signing_key) if signing_key else None
     except (OSError, ValueError, TypeError) as exc:
         print(f"error: signing key: {exc}", file=sys.stderr)
         return 2
@@ -61,17 +62,25 @@ def main(argv: list[str] | None = None) -> int:
     with open(deliverable_path, "w", encoding="utf-8") as fh:
         fh.write(result.deliverable)
     result.chain.write(receipts_path)
-    attestation_path = os.path.join(args.out, "attestation.json")
-    with open(attestation_path, "w", encoding="utf-8") as fh:
-        json.dump(attestation, fh, sort_keys=True, indent=2)
-        fh.write("\n")
+    if attestation is not None:
+        attestation_path = os.path.join(args.out, "attestation.json")
+        with open(attestation_path, "w", encoding="utf-8") as fh:
+            json.dump(attestation, fh, sort_keys=True, indent=2)
+            fh.write("\n")
+    else:
+        attestation_path = os.path.join(args.out, "attestation.json")
+        if os.path.exists(attestation_path):
+            os.remove(attestation_path)
 
     problems = verify_receipts(result.chain.receipts)
     print(result.deliverable)
     print("=" * 60)
     print(f"Deliverable: {deliverable_path}")
     print(f"Receipts:    {receipts_path} ({len(result.chain.receipts)} receipts)")
-    print(f"Attestation: {attestation_path} (signature self-checked)")
+    if attestation is not None:
+        print(f"Attestation: {attestation_path} (signature self-checked)")
+    else:
+        print("Package is UNSIGNED (PROOFCREW_SIGNING_KEY is not configured).")
     print(f"Worker B grounded via Tavily: {result.grounded_worker_b}")
     print(f"Adjudicated by planner:       {result.adjudicated}")
     if problems:

@@ -19,6 +19,8 @@ def load_signing_key(path):
 
 def run_signed_crew(task, transport, config, tavily, keys):
     result = run_crew(task, transport, config, tavily)
+    if keys is None:
+        return result, None
     private, public = keys
     data = result.deliverable.encode("utf-8")
     attestation = sign_attestation(result.chain.receipts, data, private)

@@ -123,7 +123,7 @@ pip install -r requirements.txt
 
 cp .env.example .env   # reference only: export values below; .env is not loaded automatically
 export TOKENFACTORY_API_KEY=<your Nebius Token Factory key>
-export PROOFCREW_SIGNING_KEY=/secure/path/operator-ed25519.pem
+export PROOFCREW_SIGNING_KEY=/secure/path/operator-ed25519.pem  # optional; enables signed attestation
 export TAVILY_API_KEY=<optional, enables grounded worker B>
 ```
 
@@ -137,8 +137,8 @@ Command line:
 
 ```bash
 python3 run.py "Write a launch brief for a fictional coffee subscription for remote workers"
-# -> prints the deliverable, writes proofcrew-out/deliverable.md
-#    proofcrew-out/receipts.jsonl and proofcrew-out/attestation.json
+# -> prints the deliverable and writes deliverable.md and receipts.jsonl
+#    attestation.json is also written when PROOFCREW_SIGNING_KEY is configured
 ```
 
 Web UI (stdlib `http.server`, idles in ~50 MB — happy on a 1 GB box):
