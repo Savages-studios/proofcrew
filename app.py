@@ -27,6 +27,11 @@ from proofcrew.transport import TokenFactoryTransport
 STATE: dict = {"result": None, "attestation": None, "error": None}
 RUN_LOCK = threading.Lock()
 
+# The /run form carries a single task textarea. 64 KiB is far beyond any
+# real task description and keeps a hostile or broken client from making
+# the handler buffer (or wait for) an unbounded body on a ~50 MB app.
+MAX_RUN_BODY_BYTES = 64 * 1024
+
 CSS = (
     "body{font-family:system-ui,sans-serif;max-width:840px;margin:2rem auto;"
     "padding:0 1rem;line-height:1.5}textarea{width:100%;box-sizing:border-box}"
@@ -127,7 +132,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/run":
             self._send(b"not found", status=404, content_type="text/plain")
             return
-        length = int(self.headers.get("Content-Length", 0))
+        # Guard the Content-Length before trusting it: a non-numeric value
+        # must not crash the handler, a negative one would make read()
+        # block until EOF while holding RUN_LOCK, and an oversized one
+        # must be refused before a single body byte is buffered.
+        raw_length = self.headers.get("Content-Length")
+        try:
+            length = int(raw_length) if raw_length is not None else 0
+        except ValueError:
+            self._send(b"invalid Content-Length", status=400, content_type="text/plain")
+            return
+        if length < 0:
+            self._send(b"invalid Content-Length", status=400, content_type="text/plain")
+            return
+        if length > MAX_RUN_BODY_BYTES:
+            self._send(b"request body too large", status=413, content_type="text/plain")
+            return
         form = parse_qs(self.rfile.read(length).decode("utf-8"))
         task = (form.get("task") or [""])[0].strip()
         STATE.update(error=None, result=None, attestation=None)
