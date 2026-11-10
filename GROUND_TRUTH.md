@@ -1,7 +1,7 @@
 # proofcrew — Ground Truth
 
-**Last verified:** 2026-11-09 (Pass 2 — full re-verification against the tree below: every component read in code, suite executed on the merged tree, PR state read from the GitHub API)
-**Canonical branch:** main @ a6099ac2b78806a98c8d35606b463ec87b3f0d4a (post-PR #11 merge; this file's own commit sits on top)
+**Last verified:** 2026-11-09 (Pass 2 + D1 fix pass — full re-verification against the tree below: every component read in code, suite executed on the merged tree, PR state read from the GitHub API; the D1 sections were re-verified against the fixed tree and live server runs the same night)
+**Canonical branch:** main @ b082236d3688bb4d9c0384ac3be75a1416fe4583 (post-PR #12 merge; this file's own commit sits on top)
 
 ## What this repo is
 
@@ -19,23 +19,27 @@ demo surface (D1, D2 below).
 
 ## Verified current state
 
-- **Head:** `a6099ac2b78806a98c8d35606b463ec87b3f0d4a` — merge of
-  PR #11 (D2 Content-Length guard). Lineage since the previous GT:
-  `f39bde74` (PR #5) → `33f1c67e` (PR #8, optional attestations wired
-  into CLI and web runs) → `b5314311` (PR #9, model defaults pinned
-  to live IDs) → `a6099ac2` (PR #11).
+- **Head:** `b082236d3688bb4d9c0384ac3be75a1416fe4583` — merge of
+  PR #12 (D3 GROUND_TRUTH Pass 2); the D1 fix lands on top of it via
+  its own PR. Lineage since the previous GT: `f39bde74` (PR #5) →
+  `33f1c67e` (PR #8, optional attestations wired into CLI and web
+  runs) → `b5314311` (PR #9, model defaults pinned to live IDs) →
+  `a6099ac2` (PR #11, D2 guard) → `b082236d` (PR #12).
 - **Open PRs:** exactly one — **PR #10**, "Evolution: Independent
   multi-operator Ed25519 attestation quorum" (branch
   `evolution/proof-bound-20261105`). Unlanded. Its tests prove the
   rejection paths; no positive multi-operator acceptance test exists
   yet, which is the recorded condition for calling the quorum
   verified (fix plan §6.3).
-- **Tests (executed 2026-11-09 on this exact tree):**
-  `python3 -m pytest tests/ -q` → **51 passed**;
-  `python3 -m unittest discover -s tests` → **50 tests, OK**.
+- **Tests (executed 2026-11-09 on this exact tree, post-D1-fix):**
+  `python3 -m pytest tests/ -q` → **71 passed**;
+  `python3 -m unittest discover -s tests` → **70 tests, OK**.
   (The counts differ by one because pytest and unittest count one
   subtest-bearing test differently; both runners are fully green.
-  Pre-D2 baseline on `b5314311` measured the same way: 44 passed.)
+  Pre-D2 baseline on `b5314311` measured the same way: 44 passed;
+  pre-D1-fix baseline on `b082236d`: 51 pytest / 50 unittest. The
+  D1 fix added 20 tests in `tests/test_app_run_auth.py` and modified
+  no existing test.)
 
 ## Component-by-component state
 
@@ -87,19 +91,32 @@ demo surface (D1, D2 below).
   standalone checkers. `verify_receipts.py` is standard-library
   only (imports `proofcrew.receipts` only); `attest_receipts.py`
   additionally needs `cryptography` for Ed25519.
-- **`app.py`** (demo web UI) — VERIFIED WITH ONE OPEN DEFECT.
-  Single in-memory last-run state behind a lock. **D2 FIXED by
-  PR #11:** `POST /run` now validates `Content-Length` before
-  reading any body byte — non-numeric or negative → 400,
-  over 64 KiB (`MAX_RUN_BODY_BYTES`) → 413 — where previously a
-  bad value crashed the handler, a negative one hung it under
-  the run lock, and an oversized one was buffered without bound.
-  **D1 STILL OPEN (MEDIUM, fix-queue row 77):** the server binds
-  `0.0.0.0` and `POST /run` is unauthenticated, so anyone who can
-  reach the port can spend the operator's API key. Per the
-  2026-10-30 record the public demo rides a Cloudflare quick
-  tunnel, which makes that exposure real whenever the tunnel
-  is up.
+- **`app.py`** (demo web UI) — VERIFIED. Single in-memory
+  last-run state behind a lock. **D2 FIXED by PR #11:**
+  `POST /run` validates `Content-Length` before reading any body
+  byte — non-numeric or negative → 400, over 64 KiB
+  (`MAX_RUN_BODY_BYTES`) → 413 — where previously a bad value
+  crashed the handler, a negative one hung it under the run lock,
+  and an oversized one was buffered without bound. **D1 FIXED
+  (this pass):** the server now binds loopback by default
+  (`HOST` overrides), and `POST /run` is authorized by
+  `authorize_run` before any state change or run work. With
+  `PROOFCREW_RUN_TOKEN` configured, a valid token (the
+  `X-ProofCrew-Token` header or the form's token field,
+  constant-time compared) is required from every client. With
+  no token configured, only a direct local request — loopback
+  bind, loopback client, no proxy/tunnel forwarding headers —
+  is accepted; forwarded, remote, and wide-bind requests are
+  refused 403 with a named reason, because a tunnel makes a
+  remote visitor indistinguishable from a local client at the
+  address level. The viewing endpoints (page, deliverable,
+  receipts, attestation of the last run) remain public by
+  design — D1 was the spend surface, and the spend surface is
+  what is gated. Exposure and closure were both proven against
+  live servers (before: `0.0.0.0` listen + unauthenticated POST
+  drove a real provider API call with the server's key; after:
+  loopback listen, forwarded and wide-bind POSTs refused,
+  token POSTs accepted, on three configurations).
 
 ## Reported, not re-verified this pass
 
@@ -118,10 +135,16 @@ demo surface (D1, D2 below).
 
 ## Known defects / honest gaps
 
-- **D1 OPEN (MEDIUM)** — demo binds `0.0.0.0`, `POST /run`
-  unauthenticated: an open spend surface whenever reachable.
-  Queue target: authenticate `/run` and bind localhost by
-  default (fix-queue row 77).
+- **D1 FIXED** — the demo bound `0.0.0.0` with `POST /run`
+  unauthenticated (an open spend surface whenever reachable,
+  including via the public demo's Cloudflare quick tunnel).
+  Closed per the queue target (row 77): localhost bind by
+  default + `/run` authenticated by the operator token
+  whenever a request is not a direct local one. See the
+  `app.py` component entry for the exact policy and proof.
+  Operator note: exposing the demo through any tunnel or
+  proxy without setting `PROOFCREW_RUN_TOKEN` leaves `/run`
+  refusing forwarded requests — deliberately; set the token.
 - **ProofCrew was never submitted to the hackathon** — verified
   first-hand 2026-10-30 (Devpost portfolio shows 0 projects; no
   confirmation mail exists). The submission task failed silently.
@@ -154,17 +177,22 @@ demo surface (D1, D2 below).
   and the exact bytes: not model claims, not source truth, not
   settlement. `docs/SIGNED_EVIDENCE_EXPORT.md` states the same
   scope.
-- The demo is **not** authenticated and **not** localhost-only,
-  and the tunnel URL is **not** a private surface (D1).
+- The demo's spend endpoint is **not** open anymore: the
+  pre-fix claim "the demo is not authenticated and not
+  localhost-only" described D1 and is retired. What remains
+  true: the tunnel URL is **not** a private surface for
+  *viewing* (the page and the last run's artifacts are public
+  by design), and a tunnel without `PROOFCREW_RUN_TOKEN` set
+  cannot run the crew at all — runs are refused, not exposed.
 
 ## How to verify
 
 - `python3 -m pytest tests/ -q` (with `requirements.txt`
-  installed) → expect 51 passed at this head;
-  `python3 -m unittest discover -s tests` → expect OK (50 tests).
+  installed) → expect 71 passed at this head;
+  `python3 -m unittest discover -s tests` → expect OK (70 tests).
 - `python3 verify_receipts.py <receipts.jsonl>` → chain check,
   standard library only.
-- Head check: `GET /repos/sa6ag9/proofcrew/git/ref/heads/main`.
+- Head check: `GET /repos/Savages-studios/proofcrew/git/ref/heads/main`.
 
 ## Estate rule
 
