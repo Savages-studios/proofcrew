@@ -150,6 +150,14 @@ python3 app.py            # http://localhost:8080  (PORT env to change)
 Submit a task, read the deliverable, see the stage list, the grounding and
 adjudication flags, the chain verdict, and download the receipts.
 
+The page is public to view, but `POST /run` spends your API key, so it is
+gated: `app.py` binds `127.0.0.1` by default (`HOST` to change), and a run
+is accepted only from a direct local client — or from anywhere when the
+request presents the operator token (`PROOFCREW_RUN_TOKEN`, via the form's
+token field or the `X-ProofCrew-Token` header). If you expose the demo
+through a tunnel or proxy, set `PROOFCREW_RUN_TOKEN` first: forwarded
+requests without a valid token are refused.
+
 ## Verify the receipts — don't trust, check
 
 Every run writes `receipts.jsonl`: one JSON receipt per stage, each with

@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
 """ProofCrew web UI — Python standard library only (http.server).
 
-    TOKENFACTORY_API_KEY=... python3 app.py   # serves on $PORT (default 8080)
+    TOKENFACTORY_API_KEY=... python3 app.py   # serves on $HOST:$PORT
+                                              # (default 127.0.0.1:8080)
 
 One page: submit a task, watch the crew's verdicts, read the deliverable,
 download the receipt chain, and see the chain verification result rendered
 on the page. State is a single in-memory last run — deliberately tiny so
 the app idles in ~50 MB and runs happily on a 1 GB box.
+
+Viewing is public; spending is not. ``POST /run`` drives the crew with
+the operator's API key, so it is gated (defect D1): the server binds
+loopback by default, and a run is accepted only from a direct local
+client — or from anywhere when the request presents the operator token
+(``PROOFCREW_RUN_TOKEN``, sent as the ``X-ProofCrew-Token`` header or
+the form's token field). A request that arrives through a proxy or
+tunnel (forwarding headers present), from a non-loopback client, or
+against a server bound beyond loopback is refused with 403 unless a
+valid token is presented; if no token is configured, those requests
+cannot be authorized at all. Before exposing the demo through any
+tunnel or proxy, set ``PROOFCREW_RUN_TOKEN``.
 """
+import hmac
 import html
+import ipaddress
 import json
 import os
 import sys
@@ -31,6 +46,94 @@ RUN_LOCK = threading.Lock()
 # real task description and keeps a hostile or broken client from making
 # the handler buffer (or wait for) an unbounded body on a ~50 MB app.
 MAX_RUN_BODY_BYTES = 64 * 1024
+
+# --- /run authorization (D1) -------------------------------------------------
+# The demo binds loopback unless HOST says otherwise, and /run spends the
+# operator's API key, so the run endpoint is authorized separately from
+# the (public) viewing endpoints. The policy is a pure function of the
+# bind address, the client address, proxy/tunnel forwarding headers, and
+# the configured operator token, so tests can pin the whole matrix.
+DEFAULT_HOST = "127.0.0.1"
+RUN_TOKEN_ENV = "PROOFCREW_RUN_TOKEN"
+TOKEN_HEADER = "X-ProofCrew-Token"
+FORWARDING_HEADERS = ("X-Forwarded-For", "CF-Connecting-IP", "Forwarded")
+
+
+def server_host() -> str:
+    """Bind address for the demo: loopback unless HOST overrides it."""
+    return os.environ.get("HOST") or DEFAULT_HOST
+
+
+def configured_run_token() -> str | None:
+    return os.environ.get(RUN_TOKEN_ENV) or None
+
+
+def is_loopback_host(host: str) -> bool:
+    """True only for addresses that cannot be reached from another host.
+
+    Wildcards (0.0.0.0 / ::), ordinary interface addresses, and names
+    that are not literally loopback all count as NOT loopback — the
+    local-trust claim fails closed.
+    """
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def request_is_forwarded(headers) -> bool:
+    """True when a proxy or tunnel carried this request to us.
+
+    A forwarded request's client address is the proxy's, so a loopback
+    client address proves nothing about who originated the request.
+    """
+    return any((headers.get(name) or "").strip() for name in FORWARDING_HEADERS)
+
+
+def authorize_run(
+    *,
+    bind_host: str,
+    client_host: str,
+    forwarded: bool,
+    configured_token: str | None,
+    provided_tokens,
+) -> tuple[bool, str]:
+    """Decide whether a POST /run may spend the operator's API key.
+
+    Returns (allowed, reason); the reason is empty when allowed and a
+    short refusal explanation otherwise. A valid operator token (when
+    one is configured) authorizes from anywhere. With no token
+    configured, only a direct local request — loopback bind, loopback
+    client, no forwarding headers — is authorized, and every other
+    shape fails closed.
+    """
+    if configured_token is not None:
+        configured = configured_token
+        for candidate in provided_tokens:
+            if candidate and hmac.compare_digest(
+                candidate.encode("utf-8"), configured.encode("utf-8")
+            ):
+                return True, ""
+        return False, "a valid operator token is required to run the crew"
+    if forwarded:
+        return False, (
+            "this request arrived through a proxy or tunnel and no "
+            "operator token is configured (set PROOFCREW_RUN_TOKEN "
+            "before exposing the demo)"
+        )
+    if not is_loopback_host(bind_host):
+        return False, (
+            "the server is bound beyond loopback and no operator token "
+            "is configured (set PROOFCREW_RUN_TOKEN or bind HOST=127.0.0.1)"
+        )
+    if not is_loopback_host(client_host):
+        return False, (
+            "runs are accepted only from local clients when no operator "
+            "token is configured (set PROOFCREW_RUN_TOKEN)"
+        )
+    return True, ""
 
 CSS = (
     "body{font-family:system-ui,sans-serif;max-width:840px;margin:2rem auto;"
@@ -56,6 +159,8 @@ def render_page(state=None) -> bytes:
         "SHA-256 hash-chained receipt file anyone can re-verify.</p>",
         "<form method='post' action='/run'>"
         "<textarea name='task' rows='4' placeholder='Describe the task for the crew...'></textarea>"
+        "<br><input type='password' name='token' autocomplete='off' "
+        "placeholder='Operator token (only when the server requires one)'>"
         "<br><button type='submit'>Run the crew</button></form>",
     ]
     if state["error"]:
@@ -93,6 +198,20 @@ def render_page(state=None) -> bytes:
             parts.append("<p><a href='/attestation'>Download attestation.json</a></p>")
     parts.append("</body></html>")
     return "".join(parts).encode("utf-8")
+
+
+def bind_host_of(handler) -> str:
+    # BaseHTTPRequestHandler always sets .server on a live request; the
+    # fallback covers synthetic in-process callers (tests), which are
+    # inside the operator's trust boundary by construction — a network
+    # client cannot make these attributes disappear.
+    address = getattr(getattr(handler, "server", None), "server_address", None)
+    return address[0] if address else DEFAULT_HOST
+
+
+def client_host_of(handler) -> str:
+    address = getattr(handler, "client_address", None)
+    return address[0] if address else "127.0.0.1"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -150,6 +269,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         form = parse_qs(self.rfile.read(length).decode("utf-8"))
         task = (form.get("task") or [""])[0].strip()
+        # Authorization comes before any state change or run work: a
+        # refused request must not clear the last run or reach the crew.
+        allowed, reason = authorize_run(
+            bind_host=bind_host_of(self),
+            client_host=client_host_of(self),
+            forwarded=request_is_forwarded(self.headers),
+            configured_token=configured_run_token(),
+            provided_tokens=[
+                self.headers.get(TOKEN_HEADER),
+                (form.get("token") or [None])[0],
+            ],
+        )
+        if not allowed:
+            self._send(
+                f"run refused: {reason}".encode("utf-8"),
+                status=403,
+                content_type="text/plain",
+            )
+            return
         STATE.update(error=None, result=None, attestation=None)
         if not task:
             STATE["error"] = "Please enter a task."
@@ -181,8 +319,17 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     port = int(os.environ.get("PORT", "8080"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"ProofCrew listening on http://0.0.0.0:{port}")
+    host = server_host()
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"ProofCrew listening on http://{host}:{port}")
+    if configured_run_token() is not None:
+        print("POST /run requires the operator token (PROOFCREW_RUN_TOKEN).")
+    elif is_loopback_host(host):
+        print("POST /run accepts direct local requests only "
+              "(set PROOFCREW_RUN_TOKEN before using any tunnel or proxy).")
+    else:
+        print("WARNING: bound beyond loopback with no PROOFCREW_RUN_TOKEN — "
+              "POST /run will refuse every request.")
     server.serve_forever()
 
 
